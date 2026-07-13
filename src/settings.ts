@@ -1,0 +1,179 @@
+import { App, ButtonComponent, Notice, PluginSettingTab, Setting } from "obsidian";
+import type GithubPagesSharePlugin from "./main";
+import { GithubClient } from "./github";
+
+export interface PublishedNoteRecord {
+	repoPath: string;
+	slug: string;
+}
+
+export interface GithubPagesShareSettings {
+	token: string;
+	repo: string;
+	branch: string;
+	notesFolder: string;
+	assetsFolder: string;
+	baseUrl: string;
+	autoUpdate: boolean;
+	/** Set once GitHub Pages has been confirmed enabled, so publish stops re-checking the Pages API. */
+	pagesConfirmed: boolean;
+	registry: Record<string, PublishedNoteRecord>;
+}
+
+export const DEFAULT_SETTINGS: GithubPagesShareSettings = {
+	token: "",
+	repo: "",
+	branch: "main",
+	notesFolder: "notes",
+	assetsFolder: "assets",
+	baseUrl: "",
+	autoUpdate: true,
+	pagesConfirmed: false,
+	registry: {},
+};
+
+/** Default Pages URL derived from owner/repo, used when baseUrl is not overridden. */
+export function deriveBaseUrl(settings: GithubPagesShareSettings): string {
+	const [owner, repoName] = settings.repo.split("/");
+	if (!owner || !repoName) return "";
+	return `https://${owner}.github.io/${repoName}`;
+}
+
+function normalizeFolderName(value: string, fallback: string): string {
+	const trimmed = value.trim().replace(/^\/+|\/+$/g, "");
+	return trimmed || fallback;
+}
+
+export class GithubPagesShareSettingTab extends PluginSettingTab {
+	plugin: GithubPagesSharePlugin;
+
+	constructor(app: App, plugin: GithubPagesSharePlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
+
+		new Setting(containerEl).setName("GitHub connection").setHeading();
+
+		new Setting(containerEl)
+			.setName("Personal access token")
+			.setDesc(
+				"Fine-grained token with contents read/write on the target repo. Stored as plain text in this vault's plugin data.",
+			)
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text
+					.setPlaceholder("Paste token here")
+					.setValue(this.plugin.settings.token)
+					.onChange(async (value) => {
+						this.plugin.settings.token = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Repository")
+			.setDesc("GitHub repository as owner/name.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Owner/name")
+					.setValue(this.plugin.settings.repo)
+					.onChange(async (value) => {
+						this.plugin.settings.repo = value.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Branch")
+			.setDesc("Branch that GitHub pages serves from.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Branch name")
+					.setValue(this.plugin.settings.branch)
+					.onChange(async (value) => {
+						this.plugin.settings.branch = value.trim() || "main";
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Notes folder")
+			.setDesc("Folder in the repo where published notes are saved.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Folder name")
+					.setValue(this.plugin.settings.notesFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.notesFolder = normalizeFolderName(value, "notes");
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Assets folder")
+			.setDesc("Folder in the repo where uploaded images are saved.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Folder name")
+					.setValue(this.plugin.settings.assetsFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.assetsFolder = normalizeFolderName(value, "assets");
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		const derivedUrl = deriveBaseUrl(this.plugin.settings) || "https://owner.github.io/repo";
+		new Setting(containerEl)
+			.setName("Pages base URL")
+			.setDesc(`Shareable link prefix. Leave blank to use ${derivedUrl}.`)
+			.addText((text) =>
+				text
+					.setPlaceholder(derivedUrl)
+					.setValue(this.plugin.settings.baseUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.baseUrl = value.trim().replace(/\/+$/, "");
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Auto-update published notes")
+			.setDesc("Republish a note automatically a short while after you save changes to it.")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.autoUpdate).onChange(async (value) => {
+					this.plugin.settings.autoUpdate = value;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Test connection")
+			.setDesc("Verify the token and repository are valid.")
+			.addButton((button) =>
+				button.setButtonText("Test connection").onClick(() => {
+					void this.testConnection(button);
+				}),
+			);
+	}
+
+	private async testConnection(button: ButtonComponent): Promise<void> {
+		button.setDisabled(true);
+		try {
+			const client = new GithubClient(this.plugin.settings);
+			const repo = await client.getRepo();
+			new Notice(
+				repo.private
+					? "Connection works. Note: repo is private, so free GitHub Pages will not serve it."
+					: "Connection works.",
+			);
+		} catch (error) {
+			new Notice(error instanceof Error ? error.message : "Could not connect to GitHub.");
+		} finally {
+			button.setDisabled(false);
+		}
+	}
+}

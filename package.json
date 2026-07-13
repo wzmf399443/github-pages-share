@@ -1,0 +1,22 @@
+{
+	"name": "github-pages-share",
+	"version": "0.1.0",
+	"description": "Publish notes to a GitHub Pages site and copy shareable links.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"lint": "eslint ."
+	},
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^20",
+		"esbuild": "^0.24.0",
+		"eslint": "^9",
+		"eslint-plugin-obsidianmd": "^0.4.0",
+		"obsidian": "latest",
+		"tslib": "^2.6.0",
+		"typescript": "^5.5.0",
+		"typescript-eslint": "^8"
+	}
+}
