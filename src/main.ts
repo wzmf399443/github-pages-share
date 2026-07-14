@@ -130,6 +130,9 @@ export default class GithubPagesSharePlugin extends Plugin {
 
 		const timerId = window.setTimeout(() => {
 			this.autoUpdateTimers.delete(file.path);
+			// Re-check at fire time: the note may have been unpublished while this
+			// timer was pending, and republishing it would resurrect the deleted file.
+			if (!this.settings.registry[file.path]) return;
 			void publishNote(this, file, { quiet: true });
 		}, AUTO_UPDATE_DEBOUNCE_MS);
 		this.autoUpdateTimers.set(file.path, timerId);

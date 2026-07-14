@@ -145,7 +145,9 @@ export function transformCallouts(content: string): string {
 		} else {
 			out.push(`${indent}<blockquote class="callout callout-${safeType}" markdown="1">`);
 			if (title) {
-				out.push(`**${title}**`);
+				// HTML-escaped <strong> instead of **...**: a title containing markdown
+				// metacharacters must not break out of the emitted block.
+				out.push(`${indent}<strong class="callout-title">${escapeHtmlAttribute(title)}</strong>`);
 			}
 			if (inner.trim().length > 0) {
 				out.push("");
