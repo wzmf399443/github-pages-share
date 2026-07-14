@@ -40,3 +40,12 @@
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 }
+
+.gps-danger-button {
+	background-color: var(--background-modifier-error);
+	color: var(--text-on-accent);
+}
+
+.gps-danger-button:hover:not(:disabled) {
+	background-color: var(--background-modifier-error-hover);
+}

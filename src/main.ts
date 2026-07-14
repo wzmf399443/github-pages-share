@@ -1,6 +1,6 @@
-import { Plugin, TFile, Notice } from "obsidian";
+import { Plugin, TFile, TFolder, Notice } from "obsidian";
 import { DEFAULT_SETTINGS, GithubPagesShareSettingTab, type GithubPagesShareSettings } from "./settings";
-import { copyPublishedLink, publishNote, setupRepo } from "./publisher";
+import { copyPublishedLink, publishFolder, publishNote, setupRepo, unpublishNote } from "./publisher";
 
 const AUTO_UPDATE_DEBOUNCE_MS = 15000;
 
@@ -44,6 +44,19 @@ export default class GithubPagesSharePlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "unpublish-note",
+			name: "Unpublish current note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!(file instanceof TFile) || file.extension !== "md") return false;
+				if (!this.settings.registry[file.path]) return false;
+				if (checking) return true;
+				void unpublishNote(this, file);
+				return true;
+			},
+		});
+
 		this.addRibbonIcon("upload-cloud", "Publish current note", () => {
 			const file = this.app.workspace.getActiveFile();
 			if (file instanceof TFile && file.extension === "md") {
@@ -62,6 +75,30 @@ export default class GithubPagesSharePlugin extends Plugin {
 						.setIcon("upload-cloud")
 						.onClick(() => {
 							void publishNote(this, file);
+						});
+				});
+				if (this.settings.registry[file.path]) {
+					menu.addItem((item) => {
+						item
+							.setTitle("Unpublish from GitHub pages")
+							.setIcon("trash-2")
+							.onClick(() => {
+								void unpublishNote(this, file);
+							});
+					});
+				}
+			}),
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, folder) => {
+				if (!(folder instanceof TFolder)) return;
+				menu.addItem((item) => {
+					item
+						.setTitle("Publish folder")
+						.setIcon("upload-cloud")
+						.onClick(() => {
+							void publishFolder(this, folder);
 						});
 				});
 			}),
@@ -96,6 +133,16 @@ export default class GithubPagesSharePlugin extends Plugin {
 			void publishNote(this, file, { quiet: true });
 		}, AUTO_UPDATE_DEBOUNCE_MS);
 		this.autoUpdateTimers.set(file.path, timerId);
+	}
+
+	/** Cancels any pending auto-update for `filePath`. Called by unpublishNote so the
+	 *  unpublish + a queued republish can never race. The map drops the entry either way. */
+	clearAutoUpdateTimer(filePath: string): void {
+		const timerId = this.autoUpdateTimers.get(filePath);
+		if (timerId !== undefined) {
+			window.clearTimeout(timerId);
+		}
+		this.autoUpdateTimers.delete(filePath);
 	}
 
 	async loadSettings(): Promise<void> {

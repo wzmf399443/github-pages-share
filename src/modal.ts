@@ -79,3 +79,59 @@ export class PublishResultModal extends Modal {
 		this.contentEl.empty();
 	}
 }
+
+export interface UnpublishConfirmOptions {
+	/** Display name shown in the warning (typically the note's basename). */
+	noteName: string;
+	/** Number of uploaded images that would be removed because no other note references them. */
+	attachmentCount: number;
+	/** Invoked when the user confirms the destructive action. */
+	onConfirm: () => void;
+}
+
+/** Confirms a destructive unpublish before any file is deleted from the repo. */
+export class UnpublishConfirmModal extends Modal {
+	private readonly options: UnpublishConfirmOptions;
+
+	constructor(app: App, options: UnpublishConfirmOptions) {
+		super(app);
+		this.options = options;
+	}
+
+	onOpen(): void {
+		const { contentEl, titleEl } = this;
+		titleEl.setText("Unpublish note?");
+
+		contentEl.createDiv({
+			text: `This will delete "${this.options.noteName}" from your GitHub pages repo.`,
+		});
+		if (this.options.attachmentCount > 0) {
+			const noun = this.options.attachmentCount === 1 ? "image" : "images";
+			contentEl.createDiv({
+				text: `It will also remove ${this.options.attachmentCount} uploaded ${noun} that no other published note references.`,
+			});
+		}
+
+		const buttons = contentEl.createDiv({ cls: "gps-publish-result-buttons" });
+
+		const cancelButton = buttons.createEl("button", { text: "Cancel" });
+		cancelButton.addEventListener("click", () => {
+			this.close();
+		});
+
+		const unpublishButton = buttons.createEl("button", {
+			text: "Unpublish",
+			cls: "gps-danger-button",
+		});
+		unpublishButton.addEventListener("click", () => {
+			// Confirm before closing: close() fires onClose synchronously, and callers treat
+			// "closed without confirm" as cancel.
+			this.options.onConfirm();
+			this.close();
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}

@@ -103,27 +103,58 @@ export class GithubClient {
 		return data.sha ?? null;
 	}
 
-	/** Creates or updates a file in one call: looks up the current sha, then PUTs the new content. */
-	async putFile(path: string, content: string | ArrayBuffer, message: string): Promise<void> {
-		const sha = await this.getFileSha(path);
-		const buffer = typeof content === "string" ? textEncode(content) : content;
-		const body: Record<string, unknown> = {
-			message,
-			content: arrayBufferToBase64(buffer),
-			branch: this.branch,
-		};
-		if (sha) body.sha = sha;
-
-		const url = `${API_BASE}/repos/${this.owner}/${this.repo}/contents/${encodeRepoPath(path)}`;
-		const response = await requestUrl({
-			url,
-			method: "PUT",
-			headers: this.headers({ "Content-Type": "application/json" }),
-			body: JSON.stringify(body),
-			throw: false,
-		});
+	/**
+	 * Fetches a repo file's decoded UTF-8 contents, or null if the file does not exist yet.
+	 * Uses atob + TextDecoder instead of Node Buffer so this stays mobile-compatible.
+	 */
+	async getFileContent(path: string): Promise<string | null> {
+		const url = `${API_BASE}/repos/${this.owner}/${this.repo}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(this.branch)}`;
+		const response = await requestUrl({ url, method: "GET", headers: this.headers(), throw: false });
+		if (response.status === 404) return null;
 		if (response.status >= 400) {
 			throw new GithubApiError(extractErrorMessage(response.status, response.json), response.status);
+		}
+		const data = response.json as { content?: string; encoding?: string } | null;
+		if (!data || typeof data.content !== "string" || data.encoding !== "base64") return null;
+		const binary = atob(data.content.replace(/\n/g, ""));
+		const bytes = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+		return new TextDecoder("utf-8").decode(bytes);
+	}
+
+	/**
+	 * Creates or updates a file in one call: looks up the current sha, then PUTs the new content.
+	 * Retries up to 3 times on 409 / 422-with-sha conflicts so concurrent writers converge on the
+	 * local content instead of failing the publish.
+	 */
+	async putFile(path: string, content: string | ArrayBuffer, message: string): Promise<void> {
+		const buffer = typeof content === "string" ? textEncode(content) : content;
+		const encoded = arrayBufferToBase64(buffer);
+		const url = `${API_BASE}/repos/${this.owner}/${this.repo}/contents/${encodeRepoPath(path)}`;
+
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			const sha = await this.getFileSha(path);
+			const body: Record<string, unknown> = {
+				message,
+				content: encoded,
+				branch: this.branch,
+			};
+			if (sha) body.sha = sha;
+
+			const response = await requestUrl({
+				url,
+				method: "PUT",
+				headers: this.headers({ "Content-Type": "application/json" }),
+				body: JSON.stringify(body),
+				throw: false,
+			});
+			if (response.status < 400) return;
+
+			const isRetriable = response.status === 409
+				|| (response.status === 422 && /sha/i.test(extractErrorMessage(response.status, response.json)));
+			if (!isRetriable || attempt === 3) {
+				throw new GithubApiError(extractErrorMessage(response.status, response.json), response.status);
+			}
 		}
 	}
 
@@ -149,6 +180,28 @@ export class GithubClient {
 			throw: false,
 		});
 		if (response.status === 409) return;
+		if (response.status >= 400) {
+			throw new GithubApiError(extractErrorMessage(response.status, response.json), response.status);
+		}
+	}
+
+	/**
+	 * Idempotently deletes a file from the repo. A 404 on the sha lookup (never existed) or on
+	 * the delete call (already removed by a concurrent run) is treated as success so retries are
+	 * safe; other 4xx/5xx responses throw GithubApiError.
+	 */
+	async deleteFile(path: string, message: string): Promise<void> {
+		const sha = await this.getFileSha(path);
+		if (!sha) return;
+		const url = `${API_BASE}/repos/${this.owner}/${this.repo}/contents/${encodeRepoPath(path)}`;
+		const response = await requestUrl({
+			url,
+			method: "DELETE",
+			headers: this.headers({ "Content-Type": "application/json" }),
+			body: JSON.stringify({ message, sha, branch: this.branch }),
+			throw: false,
+		});
+		if (response.status === 404) return;
 		if (response.status >= 400) {
 			throw new GithubApiError(extractErrorMessage(response.status, response.json), response.status);
 		}

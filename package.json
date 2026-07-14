@@ -1,6 +1,6 @@
 {
 	"name": "github-pages-share",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Publish notes to a GitHub Pages site and copy shareable links.",
 	"main": "main.js",
 	"scripts": {

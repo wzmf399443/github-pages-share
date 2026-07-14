@@ -15,6 +15,22 @@ const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "b
 
 const SLUG_CHAR = /[\p{L}\p{N}]/u;
 
+const CALLOUT_HEAD = /^(\s*)>\s*\[!(\w+)\]([+-]?)(?:\s+(.*))?$/;
+const FENCE_LINE = /^\s*```/;
+const SAFE_TYPE = /^\w+$/;
+
+function titleCase(s: string): string {
+	return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function escapeHtmlAttribute(s: string): string {
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+}
+
 /** Small FNV-1a hash producing 8 hex chars. Slug fallback seed; no Node crypto (mobile compat). */
 function shortHash(input: string): string {
 	let hash = 0x811c9dc5;
@@ -49,6 +65,100 @@ export function slugifyFileName(name: string, fallbackSeed?: string): string {
 	const base = name.slice(0, dotIndex);
 	const ext = name.slice(dotIndex + 1).toLowerCase();
 	return `${slugify(base, fallbackSeed)}.${ext}`;
+}
+
+/**
+ * Converts Obsidian callouts (`> [!type] Title` + quoted body) into kramdown-friendly HTML
+ * blocks. Recurses into nested callouts; ignores callout-looking lines inside fenced code
+ * blocks. Returns the content unchanged when no callouts are detected, so repeated runs are
+ * idempotent.
+ */
+export function transformCallouts(content: string): string {
+	if (!content.includes("> [")) return content;
+	const lines = content.split("\n");
+	const out: string[] = [];
+	let inFence = false;
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (FENCE_LINE.test(line)) {
+			inFence = !inFence;
+			out.push(line);
+			i++;
+			continue;
+		}
+		if (inFence) {
+			out.push(line);
+			i++;
+			continue;
+		}
+		const match = CALLOUT_HEAD.exec(line);
+		if (!match) {
+			out.push(line);
+			i++;
+			continue;
+		}
+		const indent = match[1] ?? "";
+		const rawType = (match[2] ?? "note").toLowerCase();
+		const fold = match[3] ?? "";
+		const title = (match[4] ?? "").trim();
+		const safeType = SAFE_TYPE.test(rawType) ? rawType : "note";
+		const prefix = `${indent}>`;
+		let j = i + 1;
+		while (j < lines.length) {
+			const bl = lines[j];
+			if (bl.trim() === "") break;
+			if (bl === prefix || bl.startsWith(`${prefix} `) || bl.startsWith(prefix)) {
+				j++;
+				continue;
+			}
+			break;
+		}
+		const bodyLines: string[] = [];
+		for (let k = i + 1; k < j; k++) {
+			const bl = lines[k];
+			if (bl === prefix) {
+				bodyLines.push("");
+			} else if (bl.startsWith(`${prefix} `)) {
+				bodyLines.push(bl.slice(prefix.length + 1));
+			} else if (bl.startsWith(prefix)) {
+				bodyLines.push(bl.slice(prefix.length));
+			}
+		}
+		const inner = transformCallouts(bodyLines.join("\n"));
+		if (out.length > 0 && out[out.length - 1] !== "") {
+			out.push("");
+		}
+		if (fold === "+" || fold === "-") {
+			const openAttr = fold === "+" ? " open" : "";
+			const summary = title || titleCase(safeType);
+			out.push(`${indent}<details class="callout callout-${safeType}" markdown="1"${openAttr}>`);
+			out.push(`${indent}<summary>${escapeHtmlAttribute(summary)}</summary>`);
+			if (inner.trim().length > 0) {
+				out.push("");
+				for (const innerLine of inner.split("\n")) {
+					out.push(innerLine.length > 0 ? indent + innerLine : "");
+				}
+				out.push("");
+			}
+			out.push(`${indent}</details>`);
+		} else {
+			out.push(`${indent}<blockquote class="callout callout-${safeType}" markdown="1">`);
+			if (title) {
+				out.push(`**${title}**`);
+			}
+			if (inner.trim().length > 0) {
+				out.push("");
+				for (const innerLine of inner.split("\n")) {
+					out.push(innerLine.length > 0 ? indent + innerLine : "");
+				}
+				out.push("");
+			}
+			out.push(`${indent}</blockquote>`);
+		}
+		i = j;
+	}
+	return out.join("\n");
 }
 
 function escapeYamlString(value: string): string {
@@ -123,8 +233,9 @@ function linkReplacementText(
 
 /**
  * Converts wikilinks to standard relative links (or plain text when the target isn't published yet),
- * uploads embedded images to the assets folder and rewrites their paths, and ensures frontmatter exists.
- * Everything else is left for Jekyll to render as-is (e.g. callouts degrade to blockquotes).
+ * uploads embedded images to the assets folder and rewrites their paths, turns Obsidian callouts
+ * into kramdown-friendly HTML blocks, and ensures frontmatter exists. Everything else is left for
+ * Jekyll to render as-is.
  */
 export function transformNote(
 	app: App,
@@ -196,6 +307,7 @@ export function transformNote(
 	for (const replacement of replacements) {
 		body = body.slice(0, replacement.start) + replacement.text + body.slice(replacement.end);
 	}
+	body = transformCallouts(body);
 
 	const content = ensureFrontmatter(body, file.basename);
 	return { content, attachments: Array.from(attachmentsByPath.values()) };

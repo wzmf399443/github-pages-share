@@ -155,8 +155,31 @@ v1 四批次已完成並部署到 vault `/Users/markchang/mark/obsidian_note/MyW
 3. Fable 從 GitHub 端驗證：`has_pages: true`、`index.md` 存在、等 build 後 curl 站點 200、中文檔名頁面可開（同時驗掉 v1 留下的實測項 #6 Jekyll 主題、#7 displayText）
 4. 若 Pages 未開就發佈 → Modal 應出現警告與一鍵 setup 按鈕（可先不重測，程式碼審閱確認邏輯即可）
 
-## 不做（v1 範圍外）
+## v2 回合（0.2.0，2026-07-14）
 
-- Plugin 端轉完整 HTML、callout 渲染
+沿用調度模式（Fable 派工 general-purpose/sonnet，逐批驗收）。四批次 F→G→H→I 全部完成：
+
+| 批次 | 內容 | 主要改動 |
+|------|------|---------|
+| F | putFile 409 衝突強制覆蓋：重試迴圈最多 3 次，每次重抓 sha 再 PUT；可重試 = 409 或 422 且訊息含 "sha"；base64 編碼移到迴圈外；用盡照舊 throw | github.ts putFile |
+| G | Callout 轉 HTML 嵌入 markdown（維持 .md + Jekyll 管線）：`transformCallouts`（行掃描+遞迴，支援 +/- 摺疊、巢狀、code fence 跳過，kramdown `markdown="1"`）；樣式 `assets/callouts.css`（create-only）；`ensureHeadCustom` 改內容比對式（marker `<!-- gps-callouts-v1 -->`，檔尾附加 `relative_url` 的 CSS link，保留既有 mermaid 內容）；github.ts 加 `getFileContent` | transform.ts、callouts.css.ts（新）、publisher.ts、github.ts |
+| H | 資料夾批次發佈：file-menu 對 TFolder 顯示「Publish folder」；`publishFolder` 用 `getMarkdownFiles()` 過濾、逐檔 quiet publish、進度 Notice、逐檔錯誤不中斷、三種總結；`publishNote` 回傳型別改 `Promise<boolean>` | publisher.ts、main.ts |
+| I | Unpublish：github.ts 加 `deleteFile`（404 冪等）；`PublishedNoteRecord.attachments?: string[]`（舊記錄相容）；`unpublishNote` 刪筆記 + 未被其他已發佈筆記引用的附件（`collectReferencedAttachments` 純函式）；`UnpublishConfirmModal` 確認框（`gps-danger-button`）；command `unpublish-note` + file-menu 項目（僅已發佈筆記）；`clearAutoUpdateTimer` 防 unpublish 後排程中的 auto-update 復活 | github.ts、settings.ts、publisher.ts、modal.ts、main.ts、styles.css |
+
+審查修正（Fable 抽讀發現）：
+1. callout CSS link 不可用絕對路徑 `/assets/callouts.css`（project pages 子路徑會 404）→ 改 Liquid `{{ '/assets/callouts.css' | relative_url }}`。
+2. CSS 不可用 `[markdown="1"]` selector（kramdown 輸出會移除該屬性）→ 改 `.callout > *:first-child` / `*:last-child`。
+3. UnpublishConfirmModal 的 Unpublish 按鈕原本先 `close()` 再 `onConfirm()`，close 同步觸發 onClose 會被 caller 判成取消 → 順序對調。
+
+### 驗證
+
+- 每批次 `npm run build` + `npx eslint .` 0 error/0 warning；版本 bump 0.2.0（manifest/versions/package）。
+- 部署 vault（main.js/manifest.json/styles.css md5 一致）。
+- transformCallouts 五案例實測：無 callout 冪等、note→blockquote、warning+→details open、巢狀、fence 內不轉。
+- 實機項（使用者操作）：Reload Obsidian 後發佈含 callout 筆記看渲染；資料夾右鍵批次發佈；unpublish 含共用附件的筆記驗證只刪孤兒附件。
+
+## 不做（範圍外）
+
+- Plugin 端整頁轉完整 HTML（v2 已用「callout 轉 HTML 嵌入 markdown」方案取代）
 - 自動建立 GitHub repo（使用者先在 GitHub 網站建好 repo；Pages 啟用與初始化由「Set up Pages repo」指令處理）
-- 整個資料夾批次發佈、unpublish（可列為 v2）
+- 批次發佈時跳過未變更筆記（需逐檔 sha 比對，成本高；列為 v3 候選）

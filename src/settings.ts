@@ -5,6 +5,10 @@ import { GithubClient } from "./github";
 export interface PublishedNoteRecord {
 	repoPath: string;
 	slug: string;
+	/** Repo paths (under the assets folder) of every image this note embeds, as uploaded by
+	 *  publish. Older registry entries written before this field existed will not have it;
+	 *  treat a missing value as an empty list when iterating. */
+	attachments?: string[];
 }
 
 export interface GithubPagesShareSettings {
