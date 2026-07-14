@@ -1,9 +1,10 @@
 {
 	"id": "github-pages-share",
 	"name": "GitHub Pages share",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"minAppVersion": "1.5.0",
 	"description": "Publish notes to a GitHub Pages site and copy shareable links.",
 	"author": "Mark Chang",
+	"authorUrl": "https://github.com/wzmf399443",
 	"isDesktopOnly": false
 }

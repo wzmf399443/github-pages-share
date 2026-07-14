@@ -71,7 +71,7 @@ export default class GithubPagesSharePlugin extends Plugin {
 				if (!(file instanceof TFile) || file.extension !== "md") return;
 				menu.addItem((item) => {
 					item
-						.setTitle("Publish to GitHub pages")
+						.setTitle("Publish to GitHub Pages")
 						.setIcon("upload-cloud")
 						.onClick(() => {
 							void publishNote(this, file);
@@ -80,7 +80,7 @@ export default class GithubPagesSharePlugin extends Plugin {
 				if (this.settings.registry[file.path]) {
 					menu.addItem((item) => {
 						item
-							.setTitle("Unpublish from GitHub pages")
+							.setTitle("Unpublish from GitHub Pages")
 							.setIcon("trash-2")
 							.onClick(() => {
 								void unpublishNote(this, file);

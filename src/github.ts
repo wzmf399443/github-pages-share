@@ -39,6 +39,7 @@ interface GithubPagesResponse {
 export function parseRepo(repo: string): RepoOwnerName | null {
 	const parts = repo.split("/").map((part) => part.trim());
 	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	if (!/^[A-Za-z0-9_.-]+$/.test(parts[0]) || !/^[A-Za-z0-9_.-]+$/.test(parts[1])) return null;
 	return { owner: parts[0], repo: parts[1] };
 }
 

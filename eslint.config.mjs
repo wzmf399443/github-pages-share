@@ -19,6 +19,9 @@ export default defineConfig([
 			// This plugin's minAppVersion is 1.5.0, and requireDisplay already enforces the
 			// imperative display() method for that floor, so the newer API is out of scope.
 			"obsidianmd/settings-tab/prefer-setting-definitions": "off",
+			// "GitHub Pages" is a product name; the rule's brand dictionary only knows
+			// "GitHub", so the trailing "Pages" needs an explicit exemption.
+			"obsidianmd/ui/sentence-case": ["warn", { ignoreWords: ["Pages"] }],
 		},
 	},
 ]);

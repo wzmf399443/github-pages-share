@@ -163,7 +163,7 @@ export function transformCallouts(content: string): string {
 	return out.join("\n");
 }
 
-function escapeYamlString(value: string): string {
+export function escapeYamlString(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 

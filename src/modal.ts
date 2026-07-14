@@ -28,7 +28,7 @@ export class PublishResultModal extends Modal {
 		if (this.options.pagesNotEnabled) {
 			const warning = contentEl.createDiv({ cls: "gps-publish-result-warning" });
 			warning.createDiv({
-				text: "GitHub pages is not enabled yet, so this link will not work.",
+				text: "GitHub Pages is not enabled yet, so this link will not work.",
 			});
 			const setupButton = warning.createEl("button", {
 				text: "Set up pages repo now",
@@ -70,7 +70,7 @@ export class PublishResultModal extends Modal {
 
 		contentEl.createDiv({
 			cls: "gps-publish-result-hint",
-			text: "GitHub pages can take one to two minutes to build before the link works.",
+			text: "GitHub Pages can take one to two minutes to build before the link works.",
 		});
 	}
 
@@ -103,7 +103,7 @@ export class UnpublishConfirmModal extends Modal {
 		titleEl.setText("Unpublish note?");
 
 		contentEl.createDiv({
-			text: `This will delete "${this.options.noteName}" from your GitHub pages repo.`,
+			text: `This will delete "${this.options.noteName}" from your GitHub Pages repo.`,
 		});
 		if (this.options.attachmentCount > 0) {
 			const noun = this.options.attachmentCount === 1 ? "image" : "images";

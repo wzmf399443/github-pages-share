@@ -1,6 +1,6 @@
 import { App, ButtonComponent, Notice, PluginSettingTab, Setting } from "obsidian";
 import type GithubPagesSharePlugin from "./main";
-import { GithubClient } from "./github";
+import { GithubClient, parseRepo } from "./github";
 
 export interface PublishedNoteRecord {
 	repoPath: string;
@@ -38,14 +38,17 @@ export const DEFAULT_SETTINGS: GithubPagesShareSettings = {
 
 /** Default Pages URL derived from owner/repo, used when baseUrl is not overridden. */
 export function deriveBaseUrl(settings: GithubPagesShareSettings): string {
-	const [owner, repoName] = settings.repo.split("/");
-	if (!owner || !repoName) return "";
-	return `https://${owner}.github.io/${repoName}`;
+	const parsed = parseRepo(settings.repo);
+	if (!parsed) return "";
+	return `https://${parsed.owner}.github.io/${parsed.repo}`;
 }
 
 function normalizeFolderName(value: string, fallback: string): string {
 	const trimmed = value.trim().replace(/^\/+|\/+$/g, "");
-	return trimmed || fallback;
+	if (!trimmed) return fallback;
+	const segments = trimmed.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return fallback;
+	return segments.join("/");
 }
 
 export class GithubPagesShareSettingTab extends PluginSettingTab {
@@ -93,7 +96,7 @@ export class GithubPagesShareSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Branch")
-			.setDesc("Branch that GitHub pages serves from.")
+			.setDesc("Branch that GitHub Pages serves from.")
 			.addText((text) =>
 				text
 					.setPlaceholder("Branch name")

@@ -1,2 +1,4 @@
 node_modules/
 main.js
+.playwright-mcp/
+.serena/

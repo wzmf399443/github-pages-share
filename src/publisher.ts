@@ -2,7 +2,7 @@ import { Notice, TFile, TFolder, normalizePath } from "obsidian";
 import type GithubPagesSharePlugin from "./main";
 import { GithubApiError, GithubClient } from "./github";
 import { PublishResultModal, UnpublishConfirmModal } from "./modal";
-import { slugify, transformNote } from "./transform";
+import { slugify, transformNote, escapeYamlString } from "./transform";
 import { deriveBaseUrl, type GithubPagesShareSettings, type PublishedNoteRecord } from "./settings";
 import { CALLOUTS_CSS } from "./callouts.css";
 
@@ -10,7 +10,7 @@ const HEAD_CUSTOM_MARKER = "<!-- gps-callouts-v1 -->";
 const HEAD_CUSTOM_LINK = `<link rel="stylesheet" href="{{ '/assets/callouts.css' | relative_url }}">`;
 
 const HEAD_CUSTOM_BASE = `<script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.esm.min.mjs";
   document.querySelectorAll("pre code.language-mermaid, pre > code.language-mermaid").forEach((code) => {
     const pre = code.closest("pre");
     const container = document.createElement("pre");
@@ -45,7 +45,7 @@ async function ensureJekyllConfig(client: GithubClient, settings: GithubPagesSha
 	const existingSha = await client.getFileSha("_config.yml");
 	if (existingSha) return;
 	const repoName = settings.repo.split("/")[1] ?? settings.repo;
-	const yaml = `theme: jekyll-theme-primer\ntitle: "${repoName.replace(/"/g, '\\"')}"\n`;
+	const yaml = `theme: jekyll-theme-primer\ntitle: "${escapeYamlString(repoName)}"\n`;
 	await client.putFile("_config.yml", yaml, "Add Jekyll config for GitHub Pages");
 }
 
@@ -81,7 +81,7 @@ async function ensureIndexPage(client: GithubClient, settings: GithubPagesShareS
 	const existingSha = await client.getFileSha("index.md");
 	if (existingSha) return;
 	const repoName = settings.repo.split("/")[1] ?? settings.repo;
-	const markdown = `---\ntitle: "${repoName.replace(/"/g, '\\"')}"\n---\n\nNotes published from Obsidian appear here. Maintain this index manually as you publish more notes.\n`;
+	const markdown = `---\ntitle: "${escapeYamlString(repoName)}"\n---\n\nNotes published from Obsidian appear here. Maintain this index manually as you publish more notes.\n`;
 	await client.putFile("index.md", markdown, "Add index page for GitHub Pages");
 }
 
@@ -246,7 +246,7 @@ export function collectReferencedAttachments(
 }
 
 /**
- * Removes a note (and any attachments only it uses) from the GitHub pages repo. The registry
+ * Removes a note (and any attachments only it uses) from the GitHub Pages repo. The registry
  * entry is only cleared once the .md deletion succeeds, so a failed delete is safe to retry.
  */
 export async function unpublishNote(
@@ -354,7 +354,7 @@ export async function setupRepo(plugin: GithubPagesSharePlugin): Promise<void> {
 		progress.setMessage("Checking repository...");
 		const repoInfo = await client.getRepo();
 		if (repoInfo.private) {
-			new Notice("Repository is private. Free GitHub pages requires a public repository.");
+			new Notice("Repository is private. Free GitHub Pages requires a public repository.");
 		}
 
 		progress.setMessage("Creating Jekyll config...");
