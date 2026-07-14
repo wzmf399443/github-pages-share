@@ -30,6 +30,24 @@ async function ensureJekyllConfig(client: GithubClient, settings: GithubPagesSha
 	await client.putFile("_config.yml", yaml, "Add Jekyll config for GitHub Pages");
 }
 
+async function ensureHeadCustom(client: GithubClient): Promise<void> {
+	const existingSha = await client.getFileSha("_includes/head-custom.html");
+	if (existingSha) return;
+	const html = `<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  document.querySelectorAll("pre code.language-mermaid, pre > code.language-mermaid").forEach((code) => {
+    const pre = code.closest("pre");
+    const container = document.createElement("pre");
+    container.className = "mermaid";
+    container.textContent = code.textContent;
+    pre.replaceWith(container);
+  });
+  mermaid.initialize({ startOnLoad: true });
+</script>
+`;
+	await client.putFile("_includes/head-custom.html", html, "Add mermaid rendering support for GitHub Pages");
+}
+
 async function ensureIndexPage(client: GithubClient, settings: GithubPagesShareSettings): Promise<void> {
 	const existingSha = await client.getFileSha("index.md");
 	if (existingSha) return;
@@ -93,6 +111,7 @@ export async function publishNote(
 
 		// Fallback so publishing still works even if "Set up Pages repo" was never run.
 		await ensureJekyllConfig(client, settings);
+		await ensureHeadCustom(client);
 
 		for (let i = 0; i < attachments.length; i++) {
 			progress?.setMessage(`Uploading image ${i + 1} of ${attachments.length}...`);
@@ -200,6 +219,8 @@ export async function setupRepo(plugin: GithubPagesSharePlugin): Promise<void> {
 		await ensureJekyllConfig(client, settings);
 		progress.setMessage("Creating index page...");
 		await ensureIndexPage(client, settings);
+		progress.setMessage("Creating mermaid head include...");
+		await ensureHeadCustom(client);
 
 		progress.setMessage("Enabling pages...");
 		try {
