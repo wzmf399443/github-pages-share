@@ -109,6 +109,15 @@ function isEmptyRepoResponse(status: number, json: unknown): boolean {
 	return status === 409 && /empty/i.test(extractErrorMessage(status, json));
 }
 
+/**
+ * Right after the empty-repo bootstrap commit, the Git Data replica can still report the repo as
+ * empty (409 "…empty…") for a few seconds, so blob/tree/commit calls transiently fail. This mirrors
+ * isEmptyRepoResponse for an already-thrown GithubApiError (whose message carries the API text).
+ */
+function isEmptyRepoError(error: unknown): boolean {
+	return error instanceof GithubApiError && error.status === 409 && /empty/i.test(error.message);
+}
+
 /** Thin GitHub Contents/Pages API client. All requests go through requestUrl for mobile compatibility. */
 export class GithubClient {
 	private readonly owner: string;
@@ -192,6 +201,13 @@ export class GithubClient {
 	 *    head.
 	 *
 	 * Blobs go through base64 so text and binary attachments share one mobile-safe path.
+	 *
+	 * Two kinds of transient conflict are retried with the same backoff:
+	 * - **422 non-fast-forward** (a concurrent writer moved the ref): our remembered head is proven
+	 *   stale, so we stop trusting it and re-read the (by then caught-up) head next attempt.
+	 * - **409 empty-repo** right after a bootstrap (the Git Data replica hasn't yet seen the README
+	 *   commit): the head we just created is authoritative, so we KEEP trusting it and simply wait
+	 *   for the replica — dropping to a null/orphan head here would fork a second root commit.
 	 */
 	async commitFiles(files: Array<{ path: string; content: string | ArrayBuffer }>, message: string): Promise<void> {
 		if (files.length === 0) return;
@@ -210,36 +226,48 @@ export class GithubClient {
 			initialHead = { kind: "head", sha: readmeSha };
 		}
 
-		// Blobs are content-addressed and immutable, so create them once and reuse across retries.
-		const blobShas = await Promise.all(files.map((file) => this.createBlob(file.content)));
-		const entries = files.map((file, i) => ({ path: file.path, sha: blobShas[i] }));
-
 		const MAX_ATTEMPTS = REF_RETRY_DELAYS_MS.length + 1;
 		// Trust our remembered head on the first try; once a real non-fast-forward proves it stale,
 		// fall back to whatever the (by then hopefully caught-up) API read returns.
 		let trustRemembered = true;
+		// Blobs are content-addressed and immutable, so create them once and reuse across retries;
+		// kept inside the loop's try so a transient empty-repo 409 on the very first attempt retries
+		// like the other Git Data calls instead of throwing outright.
+		let blobShas: string[] | null = null;
 		for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-			const branchHead = attempt === 1 ? initialHead : await this.getBranchHeadSha();
-			const apiHead = branchHead.kind === "head" ? branchHead.sha : null;
-			const remembered = GithubClient.lastPushedHead.get(branchKey);
-			const headSha = trustRemembered && remembered && remembered !== apiHead ? remembered : apiHead;
+			try {
+				if (!blobShas) blobShas = await Promise.all(files.map((file) => this.createBlob(file.content)));
+				const entries = files.map((file, i) => ({ path: file.path, sha: blobShas![i] }));
 
-			const baseTreeSha = headSha ? await this.getCommitTreeSha(headSha) : null;
-			const treeSha = await this.createTree(baseTreeSha, entries);
-			const commitSha = await this.createCommit(message, treeSha, headSha);
-			const res = await this.updateOrCreateBranchRef(commitSha, headSha !== null);
-			if (res.status < 400) {
-				GithubClient.lastPushedHead.set(branchKey, commitSha);
-				return;
-			}
-			// A 422 means our head guess was behind (non-fast-forward). Our remembered sha is proven
-			// stale, so stop trusting it and give the ref replica time to catch up before re-reading.
-			if (res.status !== 422 || attempt === MAX_ATTEMPTS) {
+				const branchHead = attempt === 1 ? initialHead : await this.getBranchHeadSha();
+				const apiHead = branchHead.kind === "head" ? branchHead.sha : null;
+				const remembered = GithubClient.lastPushedHead.get(branchKey);
+				// Prefer a remembered head whenever the API read disagrees (including a lagging empty
+				// read where apiHead is null), so a post-bootstrap 409 retry never orphans the commit.
+				const headSha = trustRemembered && remembered && remembered !== apiHead ? remembered : apiHead ?? remembered ?? null;
+
+				const baseTreeSha = headSha ? await this.getCommitTreeSha(headSha) : null;
+				const treeSha = await this.createTree(baseTreeSha, entries);
+				const commitSha = await this.createCommit(message, treeSha, headSha);
+				const res = await this.updateOrCreateBranchRef(commitSha, headSha !== null);
+				if (res.status < 400) {
+					GithubClient.lastPushedHead.set(branchKey, commitSha);
+					return;
+				}
+				// Surface the ref-update failure into the shared retry handling below.
 				throw new GithubApiError(extractErrorMessage(res.status, res.json), res.status);
+			} catch (error) {
+				const nonFastForward = error instanceof GithubApiError && error.status === 422;
+				const emptyRepoLag = isEmptyRepoError(error);
+				if ((!nonFastForward && !emptyRepoLag) || attempt === MAX_ATTEMPTS) throw error;
+				// A 422 proves our remembered sha stale, so stop trusting it and re-read next attempt.
+				// An empty-repo 409 is just replica lag on a head we created, so keep trusting it.
+				if (nonFastForward) {
+					trustRemembered = false;
+					GithubClient.lastPushedHead.delete(branchKey);
+				}
+				await sleep(REF_RETRY_DELAYS_MS[attempt - 1]);
 			}
-			trustRemembered = false;
-			GithubClient.lastPushedHead.delete(branchKey);
-			await sleep(REF_RETRY_DELAYS_MS[attempt - 1]);
 		}
 	}
 

@@ -67,6 +67,9 @@ function extractErrorMessage(status, json) {
 function isEmptyRepoResponse(status, json) {
   return status === 409 && /empty/i.test(extractErrorMessage(status, json));
 }
+function isEmptyRepoError(error) {
+  return error instanceof GithubApiError && error.status === 409 && /empty/i.test(error.message);
+}
 var _GithubClient = class _GithubClient {
   constructor(settings) {
     const parsed = parseRepo(settings.repo);
@@ -133,8 +136,16 @@ var _GithubClient = class _GithubClient {
    *    head.
    *
    * Blobs go through base64 so text and binary attachments share one mobile-safe path.
+   *
+   * Two kinds of transient conflict are retried with the same backoff:
+   * - **422 non-fast-forward** (a concurrent writer moved the ref): our remembered head is proven
+   *   stale, so we stop trusting it and re-read the (by then caught-up) head next attempt.
+   * - **409 empty-repo** right after a bootstrap (the Git Data replica hasn't yet seen the README
+   *   commit): the head we just created is authoritative, so we KEEP trusting it and simply wait
+   *   for the replica — dropping to a null/orphan head here would fork a second root commit.
    */
   async commitFiles(files, message) {
+    var _a;
     if (files.length === 0) return;
     const branchKey = `${this.owner}/${this.repo}/${this.branch}`;
     let initialHead = await this.getBranchHeadSha();
@@ -143,29 +154,36 @@ var _GithubClient = class _GithubClient {
       _GithubClient.lastPushedHead.set(branchKey, readmeSha);
       initialHead = { kind: "head", sha: readmeSha };
     }
-    const blobShas = await Promise.all(files.map((file) => this.createBlob(file.content)));
-    const entries = files.map((file, i) => ({ path: file.path, sha: blobShas[i] }));
     const MAX_ATTEMPTS = REF_RETRY_DELAYS_MS.length + 1;
     let trustRemembered = true;
+    let blobShas = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const branchHead = attempt === 1 ? initialHead : await this.getBranchHeadSha();
-      const apiHead = branchHead.kind === "head" ? branchHead.sha : null;
-      const remembered = _GithubClient.lastPushedHead.get(branchKey);
-      const headSha = trustRemembered && remembered && remembered !== apiHead ? remembered : apiHead;
-      const baseTreeSha = headSha ? await this.getCommitTreeSha(headSha) : null;
-      const treeSha = await this.createTree(baseTreeSha, entries);
-      const commitSha = await this.createCommit(message, treeSha, headSha);
-      const res = await this.updateOrCreateBranchRef(commitSha, headSha !== null);
-      if (res.status < 400) {
-        _GithubClient.lastPushedHead.set(branchKey, commitSha);
-        return;
-      }
-      if (res.status !== 422 || attempt === MAX_ATTEMPTS) {
+      try {
+        if (!blobShas) blobShas = await Promise.all(files.map((file) => this.createBlob(file.content)));
+        const entries = files.map((file, i) => ({ path: file.path, sha: blobShas[i] }));
+        const branchHead = attempt === 1 ? initialHead : await this.getBranchHeadSha();
+        const apiHead = branchHead.kind === "head" ? branchHead.sha : null;
+        const remembered = _GithubClient.lastPushedHead.get(branchKey);
+        const headSha = trustRemembered && remembered && remembered !== apiHead ? remembered : (_a = apiHead != null ? apiHead : remembered) != null ? _a : null;
+        const baseTreeSha = headSha ? await this.getCommitTreeSha(headSha) : null;
+        const treeSha = await this.createTree(baseTreeSha, entries);
+        const commitSha = await this.createCommit(message, treeSha, headSha);
+        const res = await this.updateOrCreateBranchRef(commitSha, headSha !== null);
+        if (res.status < 400) {
+          _GithubClient.lastPushedHead.set(branchKey, commitSha);
+          return;
+        }
         throw new GithubApiError(extractErrorMessage(res.status, res.json), res.status);
+      } catch (error) {
+        const nonFastForward = error instanceof GithubApiError && error.status === 422;
+        const emptyRepoLag = isEmptyRepoError(error);
+        if (!nonFastForward && !emptyRepoLag || attempt === MAX_ATTEMPTS) throw error;
+        if (nonFastForward) {
+          trustRemembered = false;
+          _GithubClient.lastPushedHead.delete(branchKey);
+        }
+        await sleep(REF_RETRY_DELAYS_MS[attempt - 1]);
       }
-      trustRemembered = false;
-      _GithubClient.lastPushedHead.delete(branchKey);
-      await sleep(REF_RETRY_DELAYS_MS[attempt - 1]);
     }
   }
   /**
