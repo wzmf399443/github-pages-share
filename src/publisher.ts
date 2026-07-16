@@ -24,12 +24,17 @@ ${HEAD_CUSTOM_LINK}
 ${HEAD_CUSTOM_MARKER}
 `;
 
+/** Longer-lived Notice duration (ms) for terminal result messages the user needs time to read. */
+const LONG_NOTICE_MS = 15000;
+
 function describeError(error: unknown): string {
 	if (error instanceof GithubApiError) {
 		if (error.status === 401) return "GitHub rejected the token. Check the personal access token in settings.";
 		if (error.status === 403) return "GitHub denied the request. Check the token's repo permissions.";
 		if (error.status === 404) return "Repository not found. Check the owner/name and token access in settings.";
 		if (error.status === 409) return "GitHub reported a conflict while saving. Please try again.";
+		if (error.status === 422 && /fast.forward/i.test(error.message))
+			return "Another publish updated the repo at the same time. Please try again.";
 		return `GitHub error: ${error.message}`;
 	}
 	if (error instanceof Error) return error.message;
@@ -41,48 +46,55 @@ function buildShareLink(settings: GithubPagesShareSettings, slug: string): strin
 	return `${base}/${settings.notesFolder}/${slug}.html`;
 }
 
-async function ensureJekyllConfig(client: GithubClient, settings: GithubPagesShareSettings): Promise<void> {
+/** A file staged for a Git Data API commit. */
+type RepoFile = { path: string; content: string };
+
+/**
+ * These build* helpers produce the scaffolding files (Jekyll config, index, head include, callout
+ * styles) that publishNote/setupRepo fold into a single commit. Each keeps its original create-only
+ * / marker existence check but returns {path, content} (or null when nothing needs writing) instead
+ * of writing on its own, so all of a publish's files land in one atomic commit. The existence reads
+ * don't need to be atomic with the write: a stale read only re-writes identical content (today's
+ * behavior), never a conflict.
+ */
+async function buildJekyllConfigFile(
+	client: GithubClient,
+	settings: GithubPagesShareSettings,
+): Promise<RepoFile | null> {
 	const existingSha = await client.getFileSha("_config.yml");
-	if (existingSha) return;
+	if (existingSha) return null;
 	const repoName = settings.repo.split("/")[1] ?? settings.repo;
 	const yaml = `theme: jekyll-theme-primer\ntitle: "${escapeYamlString(repoName)}"\n`;
-	await client.putFile("_config.yml", yaml, "Add Jekyll config for GitHub Pages");
+	return { path: "_config.yml", content: yaml };
 }
 
-/**
- * Idempotently syncs the callout stylesheet to assets/callouts.css. Create-only: if the file
- * already exists in the repo (e.g. the user committed a customized version), leave it alone.
- */
-async function ensureCalloutStyles(client: GithubClient): Promise<void> {
+async function buildCalloutStylesFile(client: GithubClient): Promise<RepoFile | null> {
 	const existingSha = await client.getFileSha("assets/callouts.css");
-	if (existingSha) return;
-	await client.putFile("assets/callouts.css", CALLOUTS_CSS, "Add callout styles for GitHub Pages");
+	if (existingSha) return null;
+	return { path: "assets/callouts.css", content: CALLOUTS_CSS };
 }
 
-/**
- * Ensures _includes/head-custom.html exists, contains the mermaid bootstrap, and loads the
- * callout stylesheet. Marker `<!-- gps-callouts-v1 -->` guards the callout link so a re-run
- * never duplicates it; the link uses `relative_url` so project pages work under a sub-path.
- */
-async function ensureHeadCustom(client: GithubClient): Promise<void> {
+async function buildHeadCustomFile(client: GithubClient): Promise<RepoFile | null> {
 	const existing = await client.getFileContent("_includes/head-custom.html");
 	if (existing === null) {
-		await client.putFile("_includes/head-custom.html", HEAD_CUSTOM_BASE, "Add mermaid + callout styles for GitHub Pages");
-		return;
+		return { path: "_includes/head-custom.html", content: HEAD_CUSTOM_BASE };
 	}
-	if (existing.includes(HEAD_CUSTOM_MARKER)) return;
+	if (existing.includes(HEAD_CUSTOM_MARKER)) return null;
 	const updated = existing.endsWith("\n")
 		? `${existing}${HEAD_CUSTOM_LINK}\n${HEAD_CUSTOM_MARKER}\n`
 		: `${existing}\n${HEAD_CUSTOM_LINK}\n${HEAD_CUSTOM_MARKER}\n`;
-	await client.putFile("_includes/head-custom.html", updated, "Add callout stylesheet link to head include");
+	return { path: "_includes/head-custom.html", content: updated };
 }
 
-async function ensureIndexPage(client: GithubClient, settings: GithubPagesShareSettings): Promise<void> {
+async function buildIndexPageFile(
+	client: GithubClient,
+	settings: GithubPagesShareSettings,
+): Promise<RepoFile | null> {
 	const existingSha = await client.getFileSha("index.md");
-	if (existingSha) return;
+	if (existingSha) return null;
 	const repoName = settings.repo.split("/")[1] ?? settings.repo;
 	const markdown = `---\ntitle: "${escapeYamlString(repoName)}"\n---\n\nNotes published from Obsidian appear here. Maintain this index manually as you publish more notes.\n`;
-	await client.putFile("index.md", markdown, "Add index page for GitHub Pages");
+	return { path: "index.md", content: markdown };
 }
 
 function hasConnectionSettings(settings: GithubPagesShareSettings): boolean {
@@ -138,20 +150,33 @@ export async function publishNote(
 
 		const { content, attachments } = transformNote(plugin.app, file, rawContent, settings);
 
-		// Fallback so publishing still works even if "Set up Pages repo" was never run.
-		await ensureJekyllConfig(client, settings);
-		await ensureHeadCustom(client);
-		await ensureCalloutStyles(client);
+		// Fallback so publishing still works even if "Set up Pages repo" was never run; these only
+		// produce a file when it's missing and are committed together with the note below.
+		const scaffolding = (
+			await Promise.all([
+				buildJekyllConfigFile(client, settings),
+				buildHeadCustomFile(client),
+				buildCalloutStylesFile(client),
+			])
+		).filter((repoFile): repoFile is RepoFile => repoFile !== null);
 
+		const files: Array<{ path: string; content: string | ArrayBuffer }> = [...scaffolding];
 		for (let i = 0; i < attachments.length; i++) {
-			progress?.setMessage(`Uploading image ${i + 1} of ${attachments.length}...`);
+			progress?.setMessage(`Reading image ${i + 1} of ${attachments.length}...`);
 			const attachment = attachments[i];
 			const data = await plugin.app.vault.readBinary(attachment.file);
-			await client.putFile(attachment.repoPath, data, `Publish asset ${attachment.file.name}`);
+			files.push({ path: attachment.repoPath, content: data });
 		}
+		files.push({ path: repoPath, content });
 
-		progress?.setMessage("Uploading note...");
-		await client.putFile(repoPath, content, `Publish note ${file.basename}`);
+		// One atomic commit for the note, its attachments, and any scaffolding: no per-file sha race
+		// (the root cause of the 409/422 conflicts) and Pages rebuilds once instead of N times.
+		const message =
+			attachments.length > 0
+				? `Publish note ${file.basename} (+${attachments.length} asset${attachments.length > 1 ? "s" : ""})`
+				: `Publish note ${file.basename}`;
+		progress?.setMessage("Committing to GitHub...");
+		await client.commitFiles(files, message);
 
 		const record: PublishedNoteRecord = {
 			repoPath,
@@ -171,9 +196,8 @@ export async function publishNote(
 					const pagesInfo = await client.getPagesInfo();
 					if (pagesInfo) {
 						settings.pagesConfirmed = true;
-						if (!settings.baseUrl) {
-							settings.baseUrl = pagesInfo.url.replace(/\/+$/, "");
-						}
+						// Always overwrite: the previously saved baseUrl belongs to the previous repo.
+						settings.baseUrl = pagesInfo.url.replace(/\/+$/, "");
 						await plugin.saveSettings();
 					} else {
 						pagesNotEnabled = true;
@@ -357,28 +381,40 @@ export async function setupRepo(plugin: GithubPagesSharePlugin): Promise<void> {
 			new Notice("Repository is private. Free GitHub Pages requires a public repository.");
 		}
 
-		progress.setMessage("Creating Jekyll config...");
-		await ensureJekyllConfig(client, settings);
-		progress.setMessage("Creating index page...");
-		await ensureIndexPage(client, settings);
-		progress.setMessage("Creating mermaid head include...");
-		await ensureHeadCustom(client);
-		progress.setMessage("Creating callout stylesheet...");
-		await ensureCalloutStyles(client);
+		progress.setMessage("Preparing repo files...");
+		const scaffolding = (
+			await Promise.all([
+				buildJekyllConfigFile(client, settings),
+				buildIndexPageFile(client, settings),
+				buildHeadCustomFile(client),
+				buildCalloutStylesFile(client),
+			])
+		).filter((repoFile): repoFile is RepoFile => repoFile !== null);
+		if (scaffolding.length > 0) {
+			progress.setMessage("Committing repo files...");
+			await client.commitFiles(scaffolding, "Set up GitHub Pages repo files");
+		}
 
 		progress.setMessage("Enabling pages...");
 		try {
 			await client.enablePages();
 		} catch (error) {
 			if (error instanceof GithubApiError && error.status === 403) {
-				progress.hide();
-				new Notice(
-					"Token lacks permission to enable pages. Open the repo's settings > pages on GitHub and enable it manually. Fine-grained tokens need the pages read and write permission.",
-					0,
-				);
-				return;
+				// Enabling Pages needs Administration:write, but Pages may already be live (enabled
+				// manually) with only Pages:read. Confirm via GET before treating the 403 as fatal.
+				const alreadyLive = await client.getPagesInfo().catch(() => null);
+				if (!alreadyLive) {
+					progress.hide();
+					new Notice(
+						"Pages isn't enabled yet. Open the repo's settings > Pages on GitHub and enable it manually, or grant the token the administration: write permission (required to enable Pages automatically).",
+						0,
+					);
+					return;
+				}
+				// Pages is already live; fall through to the confirmation block below.
+			} else {
+				throw error;
 			}
-			throw error;
 		}
 
 		// enablePages succeeded (or returned 409 = already enabled), so Pages is confirmed on.
@@ -389,17 +425,16 @@ export async function setupRepo(plugin: GithubPagesSharePlugin): Promise<void> {
 		const pagesInfo = await client.getPagesInfo();
 		progress.hide();
 		if (pagesInfo) {
-			if (!settings.baseUrl) {
-				settings.baseUrl = pagesInfo.url.replace(/\/+$/, "");
-				await plugin.saveSettings();
-			}
-			new Notice(`Pages is set up: ${pagesInfo.url}`);
+			// Always overwrite: the previously saved baseUrl belongs to the previous repo.
+			settings.baseUrl = pagesInfo.url.replace(/\/+$/, "");
+			await plugin.saveSettings();
+			new Notice(`Pages is set up: ${pagesInfo.url}`, LONG_NOTICE_MS);
 		} else {
-			new Notice("Repo files are ready, but pages status could not be confirmed yet.");
+			new Notice("Repo files are ready, but pages status could not be confirmed yet.", LONG_NOTICE_MS);
 		}
 	} catch (error) {
 		progress.hide();
-		new Notice(describeError(error));
+		new Notice(describeError(error), LONG_NOTICE_MS);
 	} finally {
 		// Safety net: hide() is idempotent, so a stray persistent notice can never survive.
 		progress.hide();
