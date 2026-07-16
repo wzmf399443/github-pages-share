@@ -53,6 +53,7 @@ function normalizeFolderName(value: string, fallback: string): string {
 
 export class GithubPagesShareSettingTab extends PluginSettingTab {
 	plugin: GithubPagesSharePlugin;
+	private pagesBaseUrlInput: import("obsidian").TextComponent | null = null;
 
 	constructor(app: App, plugin: GithubPagesSharePlugin) {
 		super(app, plugin);
@@ -89,7 +90,28 @@ export class GithubPagesShareSettingTab extends PluginSettingTab {
 					.setPlaceholder("Owner/name")
 					.setValue(this.plugin.settings.repo)
 					.onChange(async (value) => {
-						this.plugin.settings.repo = value.trim();
+						const newRepo = value.trim();
+						const prevRepo = this.plugin.settings.repo;
+						const changed = !!newRepo && newRepo !== prevRepo;
+
+						// Snapshot the derived default BEFORE we change settings.repo, so we
+						// can detect "user hasn't customized baseUrl — it's still the old
+						// default" and follow the new default instead of leaving a stale
+						// value or wiping it.
+						const oldDerived = deriveBaseUrl(this.plugin.settings);
+
+						this.plugin.settings.repo = newRepo;
+
+						if (changed) {
+							const newDerived = deriveBaseUrl(this.plugin.settings);
+							const current = this.plugin.settings.baseUrl;
+							const onDefault = !current || current === oldDerived;
+							if (onDefault) {
+								this.plugin.settings.baseUrl = newDerived;
+								this.pagesBaseUrlInput?.setValue(newDerived);
+							}
+							this.plugin.settings.pagesConfirmed = false;
+						}
 						await this.plugin.saveSettings();
 					}),
 			);
@@ -137,15 +159,16 @@ export class GithubPagesShareSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Pages base URL")
 			.setDesc(`Shareable link prefix. Leave blank to use ${derivedUrl}.`)
-			.addText((text) =>
+			.addText((text) => {
+				this.pagesBaseUrlInput = text;
 				text
 					.setPlaceholder(derivedUrl)
 					.setValue(this.plugin.settings.baseUrl)
 					.onChange(async (value) => {
 						this.plugin.settings.baseUrl = value.trim().replace(/\/+$/, "");
 						await this.plugin.saveSettings();
-					}),
-			);
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Auto-update published notes")
