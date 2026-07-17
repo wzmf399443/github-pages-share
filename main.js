@@ -1251,7 +1251,7 @@ async function setupRepo(plugin) {
         if (!alreadyLive) {
           progress.hide();
           new import_obsidian5.Notice(
-            "Pages isn't enabled yet. Open the repo's settings > Pages on GitHub and enable it manually, or grant the token the administration: write permission (required to enable Pages automatically).",
+            "To complete GitHub Pages setup, open the repo's Settings tab, click Pages in the left sidebar, and enable Pages. Once Pages is enabled, you can start publishing.",
             0
           );
           return;
